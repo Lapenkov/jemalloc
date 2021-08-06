@@ -38,6 +38,12 @@ static atomic_zd_t muzzy_decay_ms_default;
 emap_t arena_emap_global;
 pa_central_t arena_pa_central_global;
 
+/*
+ * When the amount of pages to be purged exceeds this amount, deferred purge
+ * should happen.
+ */
+#define ARENA_DEFERRED_PURGE_NPAGES_THRESHOLD UINT64_C(1024)
+
 const uint64_t h_steps[SMOOTHSTEP_NSTEPS] = {
 #define STEP(step, h, x, y)			\
 		h,
@@ -65,6 +71,9 @@ static bool arena_decay_dirty(tsdn_t *tsdn, arena_t *arena,
     bool is_background_thread, bool all);
 static void arena_bin_lower_slab(tsdn_t *tsdn, arena_t *arena, edata_t *slab,
     bin_t *bin);
+static void
+arena_maybe_do_deferred_work(tsdn_t *tsdn, arena_t *arena, decay_t *decay,
+    size_t npages_new);
 
 /******************************************************************************/
 
@@ -186,6 +195,20 @@ arena_stats_merge(tsdn_t *tsdn, arena_t *arena, unsigned *nthreads,
 			bin_stats_merge(tsdn, &bstats[i],
 			    arena_get_bin(arena, i, j));
 		}
+	}
+}
+
+void
+arena_background_thread_inactivity_check(tsdn_t *tsdn, arena_t *arena,
+    bool is_background_thread) {
+	if (!background_thread_enabled() || is_background_thread) {
+		return;
+	}
+	background_thread_info_t *info =
+	    arena_background_thread_info_get(arena);
+	if (background_thread_indefinite_sleep(info)) {
+		arena_maybe_do_deferred_work(tsdn, arena,
+		    &arena->pa_shard.pac.decay_dirty, 0);
 	}
 }
 
@@ -420,8 +443,7 @@ arena_decay_impl(tsdn_t *tsdn, arena_t *arena, decay_t *decay,
 
 	if (have_background_thread && background_thread_enabled() &&
 	    epoch_advanced && !is_background_thread) {
-		background_thread_interval_check(tsdn, arena, decay,
-		    npages_new);
+		arena_maybe_do_deferred_work(tsdn, arena, decay, npages_new);
 	}
 
 	return false;
@@ -460,6 +482,112 @@ arena_decay(tsdn_t *tsdn, arena_t *arena, bool is_background_thread, bool all) {
 		return;
 	}
 	arena_decay_muzzy(tsdn, arena, is_background_thread, all);
+}
+
+static inline uint64_t
+arena_ns_until_purge(tsdn_t *tsdn, decay_t *decay, size_t npages) {
+	if (malloc_mutex_trylock(tsdn, &decay->mtx)) {
+		/* Use minimal interval if decay is contended. */
+		return DEFERRED_ASAP;
+	}
+	uint64_t result = decay_ns_until_purge(decay, npages,
+	    ARENA_DEFERRED_PURGE_NPAGES_THRESHOLD);
+
+	malloc_mutex_unlock(tsdn, &decay->mtx);
+	return result;
+}
+
+/*
+ * Get time until next deferred work ought to happen. If there are multiple
+ * things that have been deferred, this function calculates the time until
+ * the soonest of those things.
+ */
+uint64_t
+arena_time_until_deferred(tsdn_t *tsdn, arena_t *arena) {
+	uint64_t soonest;
+	soonest = arena_ns_until_purge(tsdn,
+	    &arena->pa_shard.pac.decay_dirty,
+	    ecache_npages_get(&arena->pa_shard.pac.ecache_dirty));
+	if (soonest == DEFERRED_ASAP) {
+		return soonest;
+	}
+
+	uint64_t muzzy = arena_ns_until_purge(tsdn,
+	    &arena->pa_shard.pac.decay_muzzy,
+	    ecache_npages_get(&arena->pa_shard.pac.ecache_muzzy));
+	if (muzzy < soonest) {
+		soonest = muzzy;
+		if (soonest == DEFERRED_ASAP) {
+			return soonest;
+		}
+	}
+
+	uint64_t pa = pa_shard_time_until_deferred_work(tsdn,
+	    &arena->pa_shard);
+	if (pa < soonest) {
+		soonest = pa;
+	}
+
+	return soonest;
+}
+
+static void
+arena_maybe_do_deferred_work(tsdn_t *tsdn, arena_t *arena, decay_t *decay,
+    size_t npages_new) {
+	background_thread_info_t *info = arena_background_thread_info_get(
+	    arena);
+	if (malloc_mutex_trylock(tsdn, &info->mtx)) {
+		/*
+		 * Background thread may hold the mutex for a long period of
+		 * time.  We'd like to avoid the variance on application
+		 * threads.  So keep this non-blocking, and leave the work to a
+		 * future epoch.
+		 */
+		return;
+	}
+	if (!background_thread_running(info)) {
+		goto label_done;
+	}
+	if (malloc_mutex_trylock(tsdn, &decay->mtx)) {
+		goto label_done;
+	}
+	if (!decay_gradually(decay)) {
+		goto label_done_unlock2;
+	}
+
+	nstime_t diff;
+	nstime_init(&diff, background_thread_wakeup_time_get(info));
+	if (nstime_compare(&diff, &decay->epoch) <= 0) {
+		goto label_done_unlock2;
+	}
+	nstime_subtract(&diff, &decay->epoch);
+
+	if (npages_new > 0) {
+		uint64_t npurge_new = decay_npages_purge_in(decay, &diff,
+		    npages_new);
+		info->npages_to_purge_new += npurge_new;
+	}
+
+	bool should_signal;
+	if (info->npages_to_purge_new > ARENA_DEFERRED_PURGE_NPAGES_THRESHOLD) {
+		should_signal = true;
+	} else if (unlikely(background_thread_indefinite_sleep(info)) &&
+	    (ecache_npages_get(&arena->pa_shard.pac.ecache_dirty) > 0 ||
+	    ecache_npages_get(&arena->pa_shard.pac.ecache_muzzy) > 0 ||
+	    info->npages_to_purge_new > 0)) {
+		should_signal = true;
+	} else {
+		should_signal = false;
+	}
+
+	if (should_signal) {
+		info->npages_to_purge_new = 0;
+		background_thread_wakeup_early(info, &diff);
+	}
+label_done_unlock2:
+	malloc_mutex_unlock(tsdn, &decay->mtx);
+label_done:
+	malloc_mutex_unlock(tsdn, &info->mtx);
 }
 
 /* Called from background threads. */

@@ -96,6 +96,11 @@ pa_shard_reset(tsdn_t *tsdn, pa_shard_t *shard) {
 	}
 }
 
+bool
+pa_shard_uses_hpa(pa_shard_t *shard) {
+	return atomic_load_b(&shard->use_hpa, ATOMIC_RELAXED);
+}
+
 void
 pa_shard_destroy(tsdn_t *tsdn, pa_shard_t *shard) {
 	pac_destroy(tsdn, &shard->pac);
@@ -118,7 +123,7 @@ pa_alloc(tsdn_t *tsdn, pa_shard_t *shard, size_t size, size_t alignment,
 	    WITNESS_RANK_CORE, 0);
 
 	edata_t *edata = NULL;
-	if (atomic_load_b(&shard->use_hpa, ATOMIC_RELAXED)) {
+	if (pa_shard_uses_hpa(shard)) {
 		edata = pai_alloc(tsdn, &shard->hpa_sec.pai, size, alignment,
 		    zero);
 	}
@@ -226,7 +231,7 @@ pa_decay_ms_get(pa_shard_t *shard, extent_state_t state) {
 void
 pa_shard_set_deferral_allowed(tsdn_t *tsdn, pa_shard_t *shard,
     bool deferral_allowed) {
-	if (atomic_load_b(&shard->use_hpa, ATOMIC_RELAXED)) {
+	if (pa_shard_uses_hpa(shard)) {
 		hpa_shard_set_deferral_allowed(tsdn, &shard->hpa_shard,
 		    deferral_allowed);
 	}
@@ -234,7 +239,22 @@ pa_shard_set_deferral_allowed(tsdn_t *tsdn, pa_shard_t *shard,
 
 void
 pa_shard_do_deferred_work(tsdn_t *tsdn, pa_shard_t *shard) {
-	if (atomic_load_b(&shard->use_hpa, ATOMIC_RELAXED)) {
+	if (pa_shard_uses_hpa(shard)) {
 		hpa_shard_do_deferred_work(tsdn, &shard->hpa_shard);
 	}
+}
+
+uint64_t
+pa_shard_time_until_deferred_work(tsdn_t *tsdn, pa_shard_t *shard) {
+	uint64_t time;
+
+	time = pai_time_until_deferred_work(tsdn, &shard->pac.pai);
+	if (pa_shard_uses_hpa(shard)) {
+		uint64_t hpa =
+		    pai_time_until_deferred_work(tsdn, &shard->hpa_shard.pai);
+		if (hpa < time) {
+			time = hpa;
+		}
+	}
+	return time;
 }

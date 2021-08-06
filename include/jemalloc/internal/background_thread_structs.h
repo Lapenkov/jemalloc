@@ -19,6 +19,9 @@
 #define BACKGROUND_THREAD_HPA_INTERVAL_MAX_UNINITIALIZED (-2)
 #define BACKGROUND_THREAD_HPA_INTERVAL_MAX_DEFAULT_WHEN_ENABLED 5000
 
+#define DEFERRED_ASAP UINT64_C(0)
+#define DEFERRED_NEVER UINT64_C(-1)
+
 typedef enum {
 	background_thread_stopped,
 	background_thread_started,

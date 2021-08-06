@@ -17,6 +17,7 @@
  * allocations.  It picks the implementation of the page allocator interface
  * (i.e. a pai_t) to handle a given page-level allocation request.  For now, the
  * only such implementation is the PAC code ("page allocator classic"), but
+ * TODO: verify if that holds true.
  * others will be coming soon.
  */
 
@@ -63,6 +64,7 @@ struct pa_shard_stats_s {
  * (The background thread code also touches some other decay internals, but
  * that's not fundamental; its' just an artifact of a partial refactoring, and
  * its accesses could be straightforwardly moved inside the decay module).
+ * TODO: verify if that's true
  */
 typedef struct pa_shard_s pa_shard_t;
 struct pa_shard_s {
@@ -157,6 +159,7 @@ void pa_shard_disable_hpa(tsdn_t *tsdn, pa_shard_t *shard);
  * allocations).
  */
 void pa_shard_reset(tsdn_t *tsdn, pa_shard_t *shard);
+bool pa_shard_uses_hpa(pa_shard_t *shard);
 
 /*
  * Destroy all the remaining retained extents.  Should only be called after
@@ -200,6 +203,8 @@ ssize_t pa_decay_ms_get(pa_shard_t *shard, extent_state_t state);
 void pa_shard_set_deferral_allowed(tsdn_t *tsdn, pa_shard_t *shard,
     bool deferral_allowed);
 void pa_shard_do_deferred_work(tsdn_t *tsdn, pa_shard_t *shard);
+void pa_shard_try_deferred_work(tsdn_t *tsdn, pa_shard_t *shard);
+uint64_t pa_shard_time_until_deferred_work(tsdn_t *tsdn, pa_shard_t *shard);
 
 /******************************************************************************/
 /*
