@@ -159,7 +159,6 @@ void pa_shard_disable_hpa(tsdn_t *tsdn, pa_shard_t *shard);
  * allocations).
  */
 void pa_shard_reset(tsdn_t *tsdn, pa_shard_t *shard);
-bool pa_shard_uses_hpa(pa_shard_t *shard);
 
 /*
  * Destroy all the remaining retained extents.  Should only be called after

@@ -198,7 +198,7 @@ arena_stats_merge(tsdn_t *tsdn, arena_t *arena, unsigned *nthreads,
 	}
 }
 
-void
+static void
 arena_background_thread_inactivity_check(tsdn_t *tsdn, arena_t *arena,
     bool is_background_thread) {
 	if (!background_thread_enabled() || is_background_thread) {
@@ -488,7 +488,7 @@ static inline uint64_t
 arena_ns_until_purge(tsdn_t *tsdn, decay_t *decay, size_t npages) {
 	if (malloc_mutex_trylock(tsdn, &decay->mtx)) {
 		/* Use minimal interval if decay is contended. */
-		return DEFERRED_ASAP;
+		return BACKGROUND_THREAD_DEFERRED_MIN;
 	}
 	uint64_t result = decay_ns_until_purge(decay, npages,
 	    ARENA_DEFERRED_PURGE_NPAGES_THRESHOLD);
@@ -508,7 +508,7 @@ arena_time_until_deferred(tsdn_t *tsdn, arena_t *arena) {
 	soonest = arena_ns_until_purge(tsdn,
 	    &arena->pa_shard.pac.decay_dirty,
 	    ecache_npages_get(&arena->pa_shard.pac.ecache_dirty));
-	if (soonest == DEFERRED_ASAP) {
+	if (soonest == BACKGROUND_THREAD_DEFERRED_MIN) {
 		return soonest;
 	}
 
@@ -517,7 +517,7 @@ arena_time_until_deferred(tsdn_t *tsdn, arena_t *arena) {
 	    ecache_npages_get(&arena->pa_shard.pac.ecache_muzzy));
 	if (muzzy < soonest) {
 		soonest = muzzy;
-		if (soonest == DEFERRED_ASAP) {
+		if (soonest == BACKGROUND_THREAD_DEFERRED_MIN) {
 			return soonest;
 		}
 	}

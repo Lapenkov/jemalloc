@@ -60,6 +60,7 @@ pthread_create_wrapper(pthread_t *__restrict thread, const pthread_attr_t *attr,
 bool background_thread_create(tsd_t *tsd, unsigned arena_ind) NOT_REACHED
 bool background_threads_enable(tsd_t *tsd) NOT_REACHED
 bool background_threads_disable(tsd_t *tsd) NOT_REACHED
+bool background_thread_running(background_thread_info_t *info) NOT_REACHED
 void background_thread_prefork0(tsdn_t *tsdn) NOT_REACHED
 void background_thread_prefork1(tsdn_t *tsdn) NOT_REACHED
 void background_thread_postfork_parent(tsdn_t *tsdn) NOT_REACHED
@@ -172,7 +173,7 @@ background_thread_pause_check(tsdn_t *tsdn, background_thread_info_t *info) {
 static inline void
 background_work_sleep_once(tsdn_t *tsdn, background_thread_info_t *info,
     unsigned ind) {
-	uint64_t ns_until_deferred = DEFERRED_NEVER;
+	uint64_t ns_until_deferred = BACKGROUND_THREAD_DEFERRED_MAX;
 	unsigned narenas = narenas_total_get();
 
 	for (unsigned i = ind; i < narenas; i += max_background_threads) {
@@ -193,7 +194,7 @@ background_work_sleep_once(tsdn_t *tsdn, background_thread_info_t *info,
 	}
 
 	uint64_t sleep_ns;
-	if (ns_until_deferred == DEFERRED_NEVER) {
+	if (ns_until_deferred == BACKGROUND_THREAD_DEFERRED_MAX) {
 		sleep_ns = BACKGROUND_THREAD_INDEFINITE_SLEEP;
 	} else {
 		sleep_ns =

@@ -198,8 +198,9 @@ pac_dalloc_impl(tsdn_t *tsdn, pai_t *self, edata_t *edata) {
 	ecache_dalloc(tsdn, pac, ehooks, &pac->ecache_dirty, edata);
 }
 
-static uint64_t pac_time_until_deferred_work(tsdn_t *tsdn, pai_t *self) {
-	return DEFERRED_NEVER;
+static uint64_t
+pac_time_until_deferred_work(tsdn_t *tsdn, pai_t *self) {
+	return BACKGROUND_THREAD_DEFERRED_MAX;
 }
 
 bool
