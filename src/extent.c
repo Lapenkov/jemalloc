@@ -1104,12 +1104,6 @@ extent_dalloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 
 	/* Avoid calling the default extent_dalloc unless have to. */
 	if (!ehooks_dalloc_will_fail(ehooks)) {
-		/* Remove guard pages for dalloc / unmap. */
-		if (edata_guarded_get(edata)) {
-			assert(ehooks_are_default(ehooks));
-			san_unguard_pages(tsdn, ehooks, edata, pac->emap,
-			    /* left */ true, /* right */ true);
-		}
 		/*
 		 * Deregister first to avoid a race with other allocating
 		 * threads, and reregister if deallocation fails.
@@ -1119,12 +1113,6 @@ extent_dalloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
 			return;
 		}
 		extent_reregister(tsdn, pac, edata);
-		/* If failed to dalloc, restore the guard pages */
-		if (edata_guarded_get(edata)) {
-			san_guard_pages(tsdn, ehooks, edata, pac->emap,
-			    /* left */ true, /* right */ true,
-			    /* reg_emap */ true);
-		}
 	}
 
 	/* Try to decommit; purge if that fails. */
