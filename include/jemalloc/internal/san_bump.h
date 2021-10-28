@@ -18,6 +18,9 @@ struct san_bump_alloc_s {
 };
 
 bool
+san_bump_enabled();
+
+bool
 san_bump_alloc_init(san_bump_alloc_t* sba);
 
 edata_t *
