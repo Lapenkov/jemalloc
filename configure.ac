@@ -108,13 +108,17 @@ AC_CACHE_CHECK([whether $1 is compilable],
 
 dnl ============================================================================
 
+dnl CMK: this is for the purposes of reflection script jemalloc-config, which
+dnl probably can be omitted
 CONFIG=`echo ${ac_configure_args} | sed -e 's#'"'"'\([^ ]*\)'"'"'#\1#g'`
 AC_SUBST([CONFIG])
 
 dnl Library revision.
+dnl CMK: substituted in Makefile, never used
 rev=2
 AC_SUBST([rev])
 
+dnl CMK: srcroot is actively used in test.sh, makefile
 srcroot=$srcdir
 if test "x${srcroot}" = "x." ; then
   srcroot=""
