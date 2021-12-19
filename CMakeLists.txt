@@ -1,12 +1,26 @@
 cmake_minimum_required(VERSION 3.20)
 
 include(CheckCCompilerFlag)
+include(CheckCXXCompilerFlag)
+include(CheckSourceCompiles)
+include(CheckTypeSize)
+include(TestBigEndian)
 
-project(jemalloc VERSION 5.3.0 LANGUAGES C CXX) # TODO: move version logic
+project(jemalloc VERSION 5.3.0 LANGUAGES C) # TODO: move version logic
 
 set(CMAKE_C_STANDARD 99)
-set(CMAKE_CXX_STANDARD 17)
 
+# --- Directories ---
+set(JE_BUILD_UTIL_DIR "${CMAKE_SOURCE_DIR}/build_util")
+# Directory where C programs are stored that test for available functionality and system features.
+set(JE_C_TEST_DIR "${JE_BUILD_UTIL_DIR}/test")
+
+# --- Options ---
+option(ENABLE_CXX "Enable C++ support" ON)
+set(LG_VADDR "detect" CACHE STRING "Number of significant virtual address bits")
+
+
+# --- Functions ---
 function(je_cflag_add flag)
     string(SUBSTRING ${flag} 1 -1 FLAG_TRIMMED)
     check_c_compiler_flag(${flag} "${FLAG_TRIMMED}_SUPPORTED")
@@ -31,8 +45,18 @@ function(je_cxxflag_add flag)
     endif()
 endfunction()
 
-if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
-    MESSAGE("Using GCC")
+# Check if the code snippet compiles as a part of C program
+function(je_code_compiles description main_body ret)
+    message("Checking if ${description} compiles...")
+    set(code
+        "int main() { ${main_body} }")
+    check_source_compiles(C "${code}" CODE_COMPILES)
+    set(${ret} ${CODE_COMPILES} PARENT_SCOPE) 
+    message("je_code_compiles result: ${CODE_COMPILES}")
+endfunction()
+
+if (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
+    MESSAGE("Using GCC or Clang")
     je_cflag_add(-Werror=unknown-warning-option)
     je_cflag_add(-Wall)
     je_cflag_add(-Wextra)
@@ -51,9 +75,6 @@ if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
     je_cflag_add(-Wno-missing-attributes)
     je_cflag_add(-pipe)
     je_cflag_add(-g3)
-
-elseif (CMAKE_C_COMPILER_ID MATCHES "Clang")
-    MESSAGE("Using CLANG")
 elseif (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     MESSAGE("Using MSVC")
     je_cflag_add(-nologo)
@@ -62,18 +83,134 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     je_cflag_add(-W3)
     je_cflag_add(-FS)
     je_cxxflag_add(-I${CMAKE_PROJECT_DIR}/include/msvc_compat)
-elseif (CMAKE_C_COMPILER_ID STREQUAL "Cray")
-    MESSAGE("Using Cray")
-    # dnl cray compiler 8.4 has an inlining bug
-    # if test "x$je_cv_cray_84" = "xyes" ; then
-    #   JE_CFLAGS_ADD([-hipa2])
-    #   JE_CFLAGS_ADD([-hnognu])
-    # fi
-    # dnl ignore unreachable code warning
-    # JE_CFLAGS_ADD([-hnomessage=128])
-    # dnl ignore redefinition of "malloc", "free", etc warning
-    # JE_CFLAGS_ADD([-hnomessage=1357])
+
+    check_include_file_cxx("inttypes.h" HAVE_INTTYPES_H)
+    if (NOT HAVE_INTTYPES_H)
+        je_cxxflag_add(-I${CMAKE_PROJECT_DIR}/include/msvc_compat/C99)
+    endif()
+
+else()
+    message(FATAL_ERROR "Compiler ${CMAKE_C_COMPILER_ID} is unsupported")
 endif()
+
+# --- Built in type sizes ---
+
+# TODO: figure what to do when compiler IS msvc -> configure.ac:350
+if (NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(LG_SIZEOF_PTR 3)
+    elseif (CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set(LG_SIZEOF_PTR 2)
+    else()
+        message(FATAL_ERROR "Unsupported pointer size: ${CMAKE_SIZEOF_VOID_P}")
+    endif()
+endif()
+
+CHECK_TYPE_SIZE("int" INT_SIZE)
+if (INT_SIZE EQUAL 8)
+    set(LG_SIZEOF_INT 3)
+elseif (INT_SIZE EQUAL 4)
+    set(LG_SIZEOF_INT 2)
+else()
+    message(FATAL_ERROR "Unsupported int size: ${INT_SIZE}")
+endif()
+add_compile_definitions(LG_SIZEOF_INT=${LG_SIZEOF_INT})
+
+CHECK_TYPE_SIZE("long" LONG_SIZE)
+if (LONG_SIZE EQUAL 8)
+    set(LG_SIZEOF_LONG 3)
+elseif (LONG_SIZE EQUAL 4)
+    set(LG_SIZEOF_LONG 2)
+else()
+    message(FATAL_ERROR "Unsupported long size: ${LONG_SIZE}")
+endif()
+add_compile_definitions(LG_SIZEOF_LONG=${LG_SIZEOF_LONG})
+
+CHECK_TYPE_SIZE("long long" LONG_LONG_SIZE)
+if (LONG_LONG_SIZE EQUAL 8)
+    set(LG_SIZEOF_LONG_LONG 3)
+elseif (LONG_LONG_SIZE EQUAL 4)
+    set(LG_SIZEOF_LONG_LONG 2)
+else()
+    message(FATAL_ERROR "Unsupported long long size: ${LONG_LONG_SIZE}")
+endif()
+add_compile_definitions(LG_SIZEOF_LONG_LONG=${LG_SIZEOF_LONG_LONG})
+
+CHECK_TYPE_SIZE("intmax_t" INTMAX_T_SIZE)
+if (INTMAX_T_SIZE EQUAL 8)
+    set(LG_SIZEOF_INTMAX_T 3)
+elseif (INTMAX_T_SIZE EQUAL 4)
+    set(LG_SIZEOF_INTMAX_T 2)
+else()
+    message(FATAL_ERROR "Unsupported intmax_t size: ${INTMAX_T_SIZE}")
+endif()
+add_compile_definitions(LG_SIZEOF_INTMAX_T=${LG_SIZEOF_INTMAX_T})
+
+# --- CPU Specific settings ---
+
+message ("Processor: ${CMAKE_SYSTEM_PROCESSOR}")
+# TODO: Verify system processor is correctly detected
+if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "i686")
+    set(HAVE_CPU_SPINWAIT 1)
+    if (CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        je_code_compiles("Pause instruction MSVC" "_mm_pause(); return 0;" HAVE_PAUSE_MSVC)
+        if (HAVE_PAUSE_MSVC)
+            set(CPU_SPINWAIT "_mm_pause()")
+        endif()
+    else()
+        je_code_compiles("Pause instruction" "__asm__ volatile(\"pause\"); return 0;" HAVE_ASM_PAUSE)
+        if (HAVE_ASM_PAUSE)
+            set(CPU_SPINWAIT "__asm__ volatile(\"pause\")")
+        endif()
+    endif()
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+    set(HAVE_CPU_SPINWAIT 1)
+    je_code_compiles("Yield instruction" "__asm__ volatile(\"yield\"); return 0;" HAVE_ASM_YIELD)
+    if (HAVE_ASM_YIELD)
+        set(CPU_SPINWAIT "__asm__ volatile(\"yield\")")
+    endif()
+else()
+    set(HAVE_CPU_SPINWAIT 0)
+endif()
+
+add_compile_definitions(HAVE_CPU_SPINWAIT=${HAVE_CPU_SPINWAIT})
+add_compile_definitions(CPU_SPINWAIT=${CPU_SPINWAIT})
+
+# --- Endianness ---
+
+test_big_endian(IS_BIG_ENDIAN)
+if (IS_BIG_ENDIAN)
+    add_compile_definitions(JEMALLOC_BIG_ENDIAN)
+endif()
+
+# --- Number of significant VADDR bits ---
+message("Configuring LG_VADDR")
+set(LG_VADDR_LOCAL ${LG_VADDR})
+if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+    if (LG_VADDR_LOCAL STREQUAL "detect")
+        message("Detecting the number of significant address bits - aarch64")
+        if (LG_SIZEOF_PTR EQUAL 2)
+            set(LG_VADDR_LOCAL 32)
+        else()
+            set(LG_VADDR_LOCAL 48)
+        endif()
+    endif()
+elseif (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    try_run(LG_VADDR_RUN_RESULT
+        LG_VADDR_COMPILE_RESULT
+        ${CMAKE_BINARY_DIR}
+        ${JE_C_TEST_DIR}/lg_vaddr.c
+        RUN_OUTPUT_VARIABLE LG_VADDR_RUN_OUTPUT)
+    if (NOT (LG_VADDR_COMPILE_RESULT AND LG_VADDR_RUN_OUTPUT EQUAL 0))
+        set(LG_VADDR_LOCAL ${LG_VADDR_RUN_OUTPUT})
+    else()
+        message(FATAL_ERROR "Cannot determine number of significant virtual address bits by running test program lg_vaddr.c")
+    endif()
+else()
+    # TODO: Finish x86_64 vaddr
+    # configure.ac: 465
+endif()
+add_compile_definitions(LG_VADDR=${LG_VADDR_LOCAL})
 
 set(je_sources
     src/arena.c
@@ -141,4 +278,25 @@ set(je_sources
     src/zone.c)
 
 add_library(jemalloc ${je_sources})
+
+if (ENABLE_CXX)
+    enable_language(CXX)
+    # Require at least C++14
+    target_compile_features(jemalloc PUBLIC cxx_std_14)
+    set(CMAKE_CXX_STANDARD 11)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_CXX_EXTENSIONS OFF)
+
+    je_cxxflag_add(-Wall)
+    je_cxxflag_add(-Wextra)
+    je_cxxflag_add(-g3)
+
+    add_compile_definitions(JEMALLOC_ENABLE_CXX)
+endif()
+
+# CMAKE_BINARY_DIR is the folder from where the build is running.
+# Configured files will be dumped in this folder
+je_cflag_add(-I${CMAKE_BINARY_DIR}/include)
+
+configure_file("include/jemalloc/internal/jemalloc_preamble.h.in" "include/jemalloc/internal/jemalloc_preamble.h")
 
