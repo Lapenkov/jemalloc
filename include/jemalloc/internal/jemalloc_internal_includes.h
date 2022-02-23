@@ -80,5 +80,6 @@
 #include "jemalloc/internal/jemalloc_internal_inlines_c.h"
 #include "jemalloc/internal/prof_inlines.h"
 #include "jemalloc/internal/background_thread_inlines.h"
+#include "jemalloc/internal/jemalloc_internal_inlines_d.h"
 
 #endif /* JEMALLOC_INTERNAL_INCLUDES_H */
